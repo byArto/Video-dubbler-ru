@@ -96,6 +96,82 @@
         @keyframes spin {
             to { transform: rotate(360deg); }
         }
+
+        /* TTS Provider Selector */
+        .tts-selector {
+            margin-bottom: 20px;
+            padding: 15px;
+            background: #f8f9fa;
+            border-radius: 6px;
+            border: 1px solid #e9ecef;
+        }
+        .tts-selector label {
+            display: block;
+            margin-bottom: 8px;
+            font-weight: 600;
+            color: #495057;
+        }
+        .tts-options {
+            display: flex;
+            gap: 10px;
+        }
+        .tts-option {
+            flex: 1;
+            padding: 12px;
+            border: 2px solid #dee2e6;
+            border-radius: 8px;
+            cursor: pointer;
+            transition: all 0.2s;
+            background: white;
+        }
+        .tts-option:hover {
+            border-color: #007bff;
+        }
+        .tts-option.selected {
+            border-color: #007bff;
+            background: #e7f1ff;
+        }
+        .tts-option.disabled {
+            opacity: 0.5;
+            cursor: not-allowed;
+        }
+        .tts-option.disabled:hover {
+            border-color: #dee2e6;
+        }
+        .tts-option-name {
+            font-weight: 600;
+            margin-bottom: 4px;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+        .tts-option-desc {
+            font-size: 12px;
+            color: #6c757d;
+        }
+        .tts-option-price {
+            font-size: 11px;
+            color: #28a745;
+            margin-top: 4px;
+        }
+        .badge {
+            font-size: 10px;
+            padding: 2px 6px;
+            border-radius: 10px;
+            font-weight: 500;
+        }
+        .badge-premium {
+            background: #ffc107;
+            color: #000;
+        }
+        .badge-standard {
+            background: #6c757d;
+            color: #fff;
+        }
+        .badge-unavailable {
+            background: #dc3545;
+            color: #fff;
+        }
     </style>
 </head>
 <body>
@@ -104,6 +180,29 @@
         <p>Вставьте ссылку на видео из Twitter/X или YouTube для перевода на русский язык.</p>
 
         <input type="text" id="urlInput" placeholder="https://twitter.com/... или https://youtube.com/...">
+
+        <div class="tts-selector">
+            <label>Выберите голос озвучки:</label>
+            <div class="tts-options" id="ttsOptions">
+                <div class="tts-option selected" data-provider="openai" onclick="selectProvider('openai')">
+                    <div class="tts-option-name">
+                        OpenAI TTS
+                        <span class="badge badge-standard">Стандарт</span>
+                    </div>
+                    <div class="tts-option-desc">Быстрая генерация, хорошее качество</div>
+                    <div class="tts-option-price">~$0.015 / 1000 символов</div>
+                </div>
+                <div class="tts-option" data-provider="elevenlabs" onclick="selectProvider('elevenlabs')">
+                    <div class="tts-option-name">
+                        ElevenLabs
+                        <span class="badge badge-premium">Премиум</span>
+                    </div>
+                    <div class="tts-option-desc">Натуральный голос, высокое качество</div>
+                    <div class="tts-option-price">~$0.10-0.30 / 1000 символов</div>
+                </div>
+            </div>
+        </div>
+
         <button id="submitBtn" onclick="submitVideo()">Перевести</button>
 
         <div id="status"></div>
@@ -121,6 +220,8 @@
     <script>
         let currentJobId = null;
         let pollInterval = null;
+        let selectedProvider = 'openai';
+        let providers = {};
 
         const statusMessages = {
             'queued': 'В очереди...',
@@ -132,6 +233,46 @@
             'done': 'Готово!',
             'error': 'Ошибка'
         };
+
+        // Load available TTS providers on page load
+        async function loadProviders() {
+            try {
+                const response = await fetch('/api/tts-providers');
+                providers = await response.json();
+                updateProviderUI();
+            } catch (error) {
+                console.error('Failed to load providers:', error);
+            }
+        }
+
+        function updateProviderUI() {
+            const options = document.querySelectorAll('.tts-option');
+            options.forEach(option => {
+                const provider = option.dataset.provider;
+                const providerInfo = providers[provider];
+
+                if (providerInfo && !providerInfo.available) {
+                    option.classList.add('disabled');
+                    const badge = option.querySelector('.badge');
+                    if (badge) {
+                        badge.className = 'badge badge-unavailable';
+                        badge.textContent = 'Недоступен';
+                    }
+                }
+            });
+        }
+
+        function selectProvider(provider) {
+            const option = document.querySelector(`.tts-option[data-provider="${provider}"]`);
+            if (option.classList.contains('disabled')) {
+                alert('Этот провайдер недоступен. Добавьте API ключ в .env файл.');
+                return;
+            }
+
+            document.querySelectorAll('.tts-option').forEach(el => el.classList.remove('selected'));
+            option.classList.add('selected');
+            selectedProvider = provider;
+        }
 
         function showStatus(message, isError = false, isSuccess = false) {
             const statusEl = document.getElementById('status');
@@ -167,7 +308,10 @@
                 const response = await fetch('/submit', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ url: url })
+                    body: JSON.stringify({
+                        url: url,
+                        tts_provider: selectedProvider
+                    })
                 });
 
                 if (!response.ok) {
@@ -178,7 +322,8 @@
                 const data = await response.json();
                 currentJobId = data.job_id;
 
-                showStatus(statusMessages['queued']);
+                const providerName = selectedProvider === 'elevenlabs' ? 'ElevenLabs' : 'OpenAI';
+                showStatus(statusMessages['queued'] + ' (Озвучка: ' + providerName + ')');
                 startPolling();
 
             } catch (error) {
@@ -242,6 +387,9 @@
                 submitVideo();
             }
         });
+
+        // Load providers on page load
+        loadProviders();
     </script>
 </body>
 </html>

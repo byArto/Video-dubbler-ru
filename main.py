@@ -51,8 +51,14 @@ class JobStatus(str, Enum):
     ERROR = "error"
 
 
+class TTSProvider(str, Enum):
+    OPENAI = "openai"
+    ELEVENLABS = "elevenlabs"
+
+
 class SubmitRequest(BaseModel):
     url: str
+    tts_provider: TTSProvider = TTSProvider.OPENAI
 
 
 class SubmitResponse(BaseModel):
@@ -102,12 +108,13 @@ def update_job_status(job_id: str, status: JobStatus, error: str = None):
         logger.info(f"Job {job_id}: {status.value}")
 
 
-async def process_video(job_id: str, url: str):
+async def process_video(job_id: str, url: str, tts_provider: str = "openai"):
     """Main video processing pipeline."""
     from services.downloader import download_video
     from services.transcriber import extract_audio, transcribe_audio
     from services.translator import translate_segments
     from services.tts import generate_voiceover
+    from services.tts_elevenlabs import generate_voiceover_elevenlabs
     from services.merger import merge_video_with_voiceover
 
     job_dir = os.path.join(JOBS_DIR, job_id)
@@ -130,9 +137,14 @@ async def process_video(job_id: str, url: str):
         update_job_status(job_id, JobStatus.TRANSLATING)
         translated_segments = await asyncio.to_thread(translate_segments, segments)
 
-        # Step 4: Generate Russian voiceover
+        # Step 4: Generate Russian voiceover (выбор провайдера)
         update_job_status(job_id, JobStatus.DUBBING)
-        voiceover_path = await asyncio.to_thread(generate_voiceover, translated_segments, job_dir, job_id)
+        if tts_provider == "elevenlabs":
+            logger.info("Using ElevenLabs TTS")
+            voiceover_path = await asyncio.to_thread(generate_voiceover_elevenlabs, translated_segments, job_dir, job_id)
+        else:
+            logger.info("Using OpenAI TTS")
+            voiceover_path = await asyncio.to_thread(generate_voiceover, translated_segments, job_dir, job_id)
 
         # Step 5: Merge video with voiceover
         update_job_status(job_id, JobStatus.MERGING)
@@ -169,6 +181,7 @@ async def submit_job(request: SubmitRequest, background_tasks: BackgroundTasks):
     job_data = {
         'job_id': job_id,
         'url': url,
+        'tts_provider': request.tts_provider.value,
         'status': JobStatus.QUEUED.value,
         'created_at': datetime.now().isoformat(),
         'updated_at': datetime.now().isoformat(),
@@ -178,9 +191,9 @@ async def submit_job(request: SubmitRequest, background_tasks: BackgroundTasks):
     save_job(job_id, job_data)
 
     # Start background processing
-    background_tasks.add_task(process_video, job_id, url)
+    background_tasks.add_task(process_video, job_id, url, request.tts_provider.value)
 
-    logger.info(f"Job {job_id} created for URL: {url}")
+    logger.info(f"Job {job_id} created for URL: {url} (TTS: {request.tts_provider.value})")
     return SubmitResponse(job_id=job_id)
 
 
@@ -213,6 +226,26 @@ async def get_result(job_id: str):
         media_type="video/mp4",
         filename=f"dubbed_{job_id}.mp4"
     )
+
+
+@app.get("/api/tts-providers")
+async def get_tts_providers():
+    """Get available TTS providers and their status."""
+    providers = {
+        "openai": {
+            "name": "OpenAI TTS",
+            "available": bool(os.getenv("OPENAI_API_KEY")),
+            "description": "Стандартное качество, быстрая генерация",
+            "price": "~$0.015 за 1000 символов"
+        },
+        "elevenlabs": {
+            "name": "ElevenLabs",
+            "available": bool(os.getenv("ELEVENLABS_API_KEY")),
+            "description": "Премиум качество, натуральный голос",
+            "price": "~$0.10-0.30 за 1000 символов"
+        }
+    }
+    return JSONResponse(content=providers)
 
 
 @app.get("/")
